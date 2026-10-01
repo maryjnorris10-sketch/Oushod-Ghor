@@ -13,14 +13,14 @@ button:disabled{opacity:.4}button.o{background:#fff;color:var(--g);border:1px so
 </style></head><body>
 <header><b>ঔষধ ঘর</b><span id="who"></span></header><main id="app"></main>
 <script>
-let T=localStorage.t,U=JSON.parse(localStorage.u||'null'),tab='shop',mode='login',msg='',sq='',P=[],O=[],C=[],AO=[],cart={};
+let T=localStorage.t,U=JSON.parse(localStorage.u||'null'),tab='shop',mode='login',msg='',sq='',pt='cash',LG={creditLimit:0,balance:0,payments:[]},P=[],O=[],C=[],AO=[],cart={};
 const $=document.getElementById('app'),tk=n=>'৳'+n,v=i=>document.getElementById(i)?.value.trim();
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');
 const st={placed:'নতুন',processing:'প্রসেসিং',delivered:'ডেলিভারড',cancelled:'বাতিল'},cs={pending:'অপেক্ষমাণ',active:'সক্রিয়',blocked:'বন্ধ'};
 async function api(p,m='GET',b){const r=await fetch('/api'+p,{method:m,headers:{'Content-Type':'application/json',Authorization:'Bearer '+T},body:b?JSON.stringify(b):undefined});
  const d=await r.json().catch(()=>({}));if(r.status===401&&T){out();throw new Error(d.error)}if(!r.ok)throw new Error(d.error||'সমস্যা হয়েছে');return d}
 function out(){T=U=null;localStorage.clear();draw()}
-async function load(){if(U.role==='admin')[C,P,AO]=await Promise.all([api('/admin/customers'),api('/products'),api('/admin/orders')]);else[P,O]=await Promise.all([api('/products'),api('/orders/mine')])}
+async function load(){if(U.role==='admin')[C,P,AO]=await Promise.all([api('/admin/customers'),api('/products'),api('/admin/orders')]);else[P,O,LG]=await Promise.all([api('/products'),api('/orders/mine'),api('/ledger')])}
 async function act(f){try{await f();await load();draw()}catch(e){alert(e.message)}}
 function draw(){document.getElementById('who').innerHTML=U?esc(U.pharmacyName)+' <button class="o" onclick="out()">লগআউট</button>':'';
  !U?authView():U.role==='admin'?adminView():shopView()}
@@ -32,7 +32,7 @@ async function go(){try{if(mode=='reg'){await api('/register','POST',{pharmacyNa
  const d=await api('/login','POST',{email:v('em'),password:v('pw')});T=d.token;U=d.user;localStorage.t=T;localStorage.u=JSON.stringify(U);msg='';tab=U.role=='admin'?'o':'shop';await load();draw()}
  catch(e){msg=e.message;document.getElementById('msg').textContent=msg}}
 const mg=p=>p.mrp>0?Math.round((p.mrp-p.price)/p.mrp*1000)/10:0,un={strip:'পাতা',box:'বক্স',carton:'কার্টন'};
-const itm=o=>o.items.map(i=>`<div>${esc(i.name)} × ${i.qty} ${un[i.unit]||''} <span class=m>(TP ${tk(i.price)})</span></div>`).join('');
+const itm=o=>o.items.map(i=>`<div>${esc(i.name)} × ${i.qty} ${un[i.unit]||''} <span class=m>(TP ${tk(i.price)})</span></div>`).join('')+(o.payType=='credit'?`<div class=m>বাকি | পরিশোধের তারিখ: ${new Date(o.dueDate).toLocaleDateString('bn-BD')}</div>`:'')+(o.deliveryMan?`<div class=m>ডেলিভারি ম্যান: ${esc(o.deliveryMan)}</div>`:'');
 const pb=o=>`<button class=o onclick="inv('${o._id}')">চালান / PDF</button>`;
 function plist(){const q=sq.toLowerCase();
  return P.filter(p=>!q||[p.name,p.generic,p.manufacturer,p.group,p.category].some(x=>String(x||'').toLowerCase().includes(q))).map(p=>`<div class=card><div class=row><div><b>${esc(p.name)}</b> <span class=m>${esc(p.generic)}</span>
@@ -41,23 +41,32 @@ function plist(){const q=sq.toLowerCase();
  <input class=q type=number min=0 max=${p.stock} value="${cart[p._id]||0}" onchange="setQ('${p._id}',this.value)"></div></div>`).join('')||'<p class=m>কোনো পণ্য পাওয়া যায়নি।</p>'}
 function setQ(id,x){const p=P.find(p=>p._id==id);x=Math.floor(+x)||0;cart[id]=x>0?Math.min(p.stock,Math.max(x,p.moq||1)):0;draw()}
 function shopView(){const tot=P.reduce((s,p)=>s+(cart[p._id]||0)*p.price,0);
- $.innerHTML=`<div class=tabs><button class="${tab=='shop'?'':'o'}" onclick="tab='shop';draw()">অর্ডার করুন</button><button class="${tab=='orders'?'':'o'}" onclick="tab='orders';draw()">আমার অর্ডার</button></div>`+(tab=='shop'?
+ $.innerHTML=`<div class=tabs><button class="${tab=='shop'?'':'o'}" onclick="tab='shop';draw()">অর্ডার করুন</button><button class="${tab=='orders'?'':'o'}" onclick="tab='orders';draw()">আমার অর্ডার</button><button class="${tab=='ledger'?'':'o'}" onclick="tab='ledger';draw()">হিসাব</button></div>`+(tab=='ledger'?ledgerView():tab=='shop'?
  `<input placeholder="ব্র্যান্ড, জেনেরিক, কোম্পানি বা গ্রুপ দিয়ে খুঁজুন" value="${esc(sq)}" oninput="sq=this.value;document.getElementById('pl').innerHTML=plist()"><div id=pl>${plist()}</div>
- <div class=card><div class=row><b>মোট (TP): ${tk(tot)}</b><button ${tot?'':'disabled'} onclick="order()">অর্ডার করুন (ক্যাশ অন ডেলিভারি)</button></div><p class=er>${esc(msg)}</p></div>`
+ <div class=card><div class=row><b>মোট (TP): ${tk(tot)}</b>${LG.creditLimit>0?`<select style="width:auto" onchange="pt=this.value"><option value=cash ${pt=='cash'?'selected':''}>ক্যাশ</option><option value=credit ${pt=='credit'?'selected':''}>বাকি</option></select>`:''}<button ${tot?'':'disabled'} onclick="order()">অর্ডার করুন (ক্যাশ অন ডেলিভারি)</button></div><p class=er>${esc(msg)}</p></div>`
  :(O.map(o=>`<div class=card><div class=row><b>${o.number}</b><span>${st[o.status]}</span></div><div class=m>${new Date(o.createdAt).toLocaleString('bn-BD')}</div>${itm(o)}<div class=row><b>মোট: ${tk(o.total)}</b>${pb(o)}</div></div>`).join('')||'<p class=m>কোনো অর্ডার নেই।</p>'))}
 function inv(id){const o=[...O,...AO].find(x=>x._id==id),b=o.buyer||{},w=window.open('','_blank');
  w.document.write(`<!DOCTYPE html><html lang=bn><meta charset=UTF-8><title>${o.number}</title><style>body{font-family:'Hind Siliguri','Noto Sans Bengali',sans-serif;max-width:720px;margin:20px auto;padding:0 12px}table{width:100%;border-collapse:collapse}td,th{border:1px solid #999;padding:6px;text-align:left}.r{text-align:right}</style>
 <h2>ঔষধ ঘর - চালান</h2><p>চালান নং: <b>${o.number}</b><br>তারিখ: ${new Date(o.createdAt).toLocaleDateString('bn-BD')}</p>
 <p><b>${esc(b.name)}</b><br>${esc(b.address)}<br>ফোন: ${esc(b.phone)}<br>ড্রাগ লাইসেন্স: ${esc(b.drugLicense)} | ট্রেড লাইসেন্স: ${esc(b.tradeLicense)}</p>
 <table><tr><th>পণ্য</th><th>ইউনিট</th><th>পরিমাণ</th><th class=r>TP</th><th class=r>মোট</th></tr>${o.items.map(i=>`<tr><td>${esc(i.name)}</td><td>${un[i.unit]||''}</td><td>${i.qty}</td><td class=r>${i.price}</td><td class=r>${i.price*i.qty}</td></tr>`).join('')}
-<tr><td colspan=4 class=r>সাবটোটাল</td><td class=r>${o.subtotal??o.total}</td></tr><tr><td colspan=4 class=r>ভ্যাট</td><td class=r>${o.vat||0}</td></tr><tr><td colspan=4 class=r><b>নেট মোট</b></td><td class=r><b>${o.total}</b></td></tr></table><p>পেমেন্ট: ক্যাশ অন ডেলিভারি</p><script>onload=()=>print()<\/script></html>`);w.document.close()}
-async function order(){try{await api('/orders','POST',{items:Object.entries(cart).map(([id,qty])=>({id,qty}))});cart={};msg='';tab='orders';await load();draw()}catch(e){msg=e.message;draw()}}
+<tr><td colspan=4 class=r>সাবটোটাল</td><td class=r>${o.subtotal??o.total}</td></tr><tr><td colspan=4 class=r>ভ্যাট</td><td class=r>${o.vat||0}</td></tr><tr><td colspan=4 class=r><b>নেট মোট</b></td><td class=r><b>${o.total}</b></td></tr></table><p>পেমেন্ট: ${o.payType=='credit'?'বাকি, পরিশোধের তারিখ '+new Date(o.dueDate).toLocaleDateString('bn-BD'):'ক্যাশ অন ডেলিভারি'}</p><script>onload=()=>print()<\/script></html>`);w.document.close()}
+async function order(){try{await api('/orders','POST',{items:Object.entries(cart).map(([id,qty])=>({id,qty})),payType:pt});cart={};msg='';tab='orders';await load();draw()}catch(e){msg=e.message;draw()}}
+const mt={cash:'নগদ',cheque:'চেক',bank:'ব্যাংক',bkash:'বিকাশ'};
+function ledgerView(){const a=Math.max(0,LG.creditLimit-LG.balance);
+ return `<div class=card><b>বাকির লিমিট: ${tk(LG.creditLimit)}</b><br>মোট বকেয়া: <b>${tk(LG.balance)}</b><br>ব্যবহারযোগ্য: ${tk(a)}${LG.creditLimit>0&&LG.balance>=LG.creditLimit*.9?'<p class=er>লিমিট প্রায় শেষ</p>':''}${LG.oldest&&LG.balance>0?`<p class=m>পরিশোধের তারিখ: ${new Date(LG.oldest).toLocaleDateString('bn-BD')}</p>`:''}</div>`
+ +(LG.payments.map(p=>`<div class=card><div class=row><b>${tk(p.amount)}</b><span>${mt[p.method]||''}</span></div><div class=m>${new Date(p.createdAt).toLocaleDateString('bn-BD')} ${esc(p.note)}</div></div>`).join('')||'<p class=m>এখনো কোনো পেমেন্ট নেই।</p>')}
+const ccard=c=>{const od=c.oldest&&new Date(c.oldest)<new Date()&&c.balance>0;
+ return `<div class=card><div class=row><b>${esc(c.pharmacyName)}</b><span>${cs[c.status]}</span></div><div class=m>${esc(c.ownerName)} | <a href="tel:${esc(c.phone)}">${esc(c.phone)}</a> | ${esc(c.email)}<br>${esc(c.address)}<br>ড্রাগ লাইসেন্স: ${esc(c.drugLicense)} | ট্রেড: ${esc(c.tradeLicense)}</div>
+ <div class=row><b>বকেয়া: ${tk(c.balance)}</b>${od?'<span class=er>মেয়াদ পেরিয়েছে</span>':''}</div>
+ <div class=row>বাকির লিমিট <input type=number value=${c.creditLimit||0} onchange="act(()=>api('/admin/customers/${c._id}','PATCH',{creditLimit:+this.value}))"> দিন <input type=number value=${c.creditDays||30} onchange="act(()=>api('/admin/customers/${c._id}','PATCH',{creditDays:+this.value}))"></div>
+ <div class=row><input id=pa_${c._id} type=number placeholder="টাকা পেলাম"><select id=pm_${c._id}><option value=cash>নগদ</option><option value=cheque>চেক</option><option value=bank>ব্যাংক</option><option value=bkash>বিকাশ</option></select><input id=pn_${c._id} placeholder="নোট / চেক নম্বর"><button onclick="act(()=>api('/admin/payments','POST',{userId:'${c._id}',amount:+v('pa_${c._id}'),method:v('pm_${c._id}'),note:v('pn_${c._id}')}))">জমা নিন</button></div>
+ <div class=tabs>${c.status!='active'?`<button onclick="act(()=>api('/admin/customers/${c._id}','PATCH',{status:'active'}))">অনুমোদন দিন</button>`:''}${c.status!='blocked'?`<button class=r onclick="act(()=>api('/admin/customers/${c._id}','PATCH',{status:'blocked'}))">বন্ধ করুন</button>`:''}</div></div>`};
 function adminView(){const tb=(k,l)=>`<button class="${tab==k?'':'o'}" onclick="tab='${k}';draw()">${l}</button>`;
- $.innerHTML=`<div class=tabs>${tb('o','অর্ডার')}${tb('c','কাস্টমার')}${tb('p','পণ্য')}</div>`+(tab=='o'?
+ $.innerHTML=`<div class=tabs>${tb('o','অর্ডার')}${tb('c','কাস্টমার')}${tb('p','পণ্য')}${tb('d','বকেয়া')}</div>`+(tab=='o'?
  (AO.map(o=>`<div class=card><div class=row><b>${o.number}</b><select style="width:auto" onchange="act(()=>api('/admin/orders/${o._id}','PATCH',{status:this.value}))">${Object.keys(st).map(k=>`<option value=${k} ${o.status==k?'selected':''}>${st[k]}</option>`).join('')}</select></div>
- <div>${esc(o.user?.pharmacyName)} | ${esc(o.user?.phone)}</div><div class=m>${esc(o.user?.address)} | ${new Date(o.createdAt).toLocaleString('bn-BD')}</div>${itm(o)}<div class=row><b>মোট: ${tk(o.total)}</b>${pb(o)}</div></div>`).join('')||'<p class=m>কোনো অর্ডার নেই।</p>')
- :tab=='c'?C.map(c=>`<div class=card><div class=row><b>${esc(c.pharmacyName)}</b><span>${cs[c.status]}</span></div><div class=m>${esc(c.ownerName)} | ${esc(c.phone)} | ${esc(c.email)}<br>${esc(c.address)}<br>ড্রাগ লাইসেন্স: ${esc(c.drugLicense)} | ট্রেড: ${esc(c.tradeLicense)}</div>
- <div class=tabs>${c.status!='active'?`<button onclick="act(()=>api('/admin/customers/${c._id}','PATCH',{status:'active'}))">অনুমোদন দিন</button>`:''}${c.status!='blocked'?`<button class=r onclick="act(()=>api('/admin/customers/${c._id}','PATCH',{status:'blocked'}))">বন্ধ করুন</button>`:''}</div></div>`).join('')||'<p class=m>কোনো কাস্টমার নেই।</p>'
+ <div>${esc(o.user?.pharmacyName)} | ${esc(o.user?.phone)}</div><div class=m>${esc(o.user?.address)} | ${new Date(o.createdAt).toLocaleString('bn-BD')}</div><input placeholder="ডেলিভারি ম্যানের নাম" value="${esc(o.deliveryMan)}" onchange="act(()=>api('/admin/orders/${o._id}','PATCH',{deliveryMan:this.value}))">${itm(o)}<div class=row><b>মোট: ${tk(o.total)}</b>${pb(o)}</div></div>`).join('')||'<p class=m>কোনো অর্ডার নেই।</p>')
+ :tab=='c'||tab=='d'?(C.filter(c=>tab=='c'||c.balance>0).sort((a,b)=>b.balance-a.balance).map(ccard).join('')||'<p class=m>কোনো কাস্টমার নেই।</p>')
  :`<div class=card><b>নতুন পণ্য</b><input id=n placeholder="পণ্যের নাম"><input id=c placeholder="ধরন (ট্যাবলেট, সিরাপ...)"><input id=gn placeholder="জেনেরিক নাম"><input id=mf placeholder="কোম্পানি (Square, Incepta...)"><input id=gr placeholder="গ্রুপ"><select id=u><option value=strip>পাতা</option><option value=box>বক্স</option><option value=carton>কার্টন</option></select><input id=mq type=number placeholder="সর্বনিম্ন অর্ডার (MOQ)"><input id=pr type=number placeholder="TP (পাইকারি দাম)"><input id=mr type=number placeholder="MRP"><input id=s type=number placeholder="স্টক"><button onclick="addP()">পণ্য যোগ করুন</button></div>`
  +P.map(p=>`<div class=card><b>${esc(p.name)}</b> <span class=m>${esc(p.category)}</span><div class=row>TP <input type=number value=${p.price} onchange="act(()=>api('/admin/products/${p._id}','PATCH',{price:+this.value}))"> MRP <input type=number value=${p.mrp||0} onchange="act(()=>api('/admin/products/${p._id}','PATCH',{mrp:+this.value}))"> স্টক <input type=number value=${p.stock} onchange="act(()=>api('/admin/products/${p._id}','PATCH',{stock:+this.value}))"><button class=r onclick="confirm('মুছবেন?')&&act(()=>api('/admin/products/${p._id}','DELETE'))">মুছুন</button></div></div>`).join(''))}
 function addP(){act(()=>api('/admin/products','POST',{name:v('n'),category:v('c'),generic:v('gn'),manufacturer:v('mf'),group:v('gr'),unit:v('u'),moq:+v('mq')||1,price:+v('pr'),mrp:+v('mr'),stock:+v('s')}))}
