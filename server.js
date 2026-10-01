@@ -4,8 +4,8 @@ if (!MONGO_URI || !JWT_SECRET || !ADMIN_EMAIL || !ADMIN_PASSWORD) { console.erro
 const VAT = +(process.env.VAT_PERCENT || 0);
 const S = mongoose.Schema, ID = S.Types.ObjectId;
 const User = mongoose.model('User', new S({ pharmacyName: String, ownerName: String, email: { type: String, unique: true, lowercase: true, trim: true }, phone: String, address: String, drugLicense: String, tradeLicense: String, creditLimit: { type: Number, default: 0 }, creditDays: { type: Number, default: 30 }, password: String, role: { type: String, default: 'pharmacy' }, status: { type: String, default: 'pending' } }, { timestamps: true }));
-const Product = mongoose.model('Product', new S({ name: String, category: String, price: Number, mrp: Number, generic: String, manufacturer: String, group: String, unit: { type: String, default: 'strip' }, moq: { type: Number, default: 1 }, stock: { type: Number, default: 0 }, active: { type: Boolean, default: true } }));
-const Order = mongoose.model('Order', new S({ number: String, user: { type: ID, ref: 'User' }, items: [{ product: ID, name: String, unit: String, price: Number, qty: Number }], subtotal: Number, vat: Number, total: Number, payType: { type: String, default: 'cash' }, dueDate: Date, deliveryMan: String, buyer: { name: String, phone: String, address: String, drugLicense: String, tradeLicense: String }, status: { type: String, default: 'placed' } }, { timestamps: true }));
+const Product = mongoose.model('Product', new S({ name: String, category: String, price: Number, mrp: Number, generic: String, manufacturer: String, group: String, unit: { type: String, default: 'strip' }, moq: { type: Number, default: 1 }, batch: String, expiry: Date, coldChain: Boolean, discount: { type: Number, default: 0 }, bonusBuy: Number, bonusFree: Number, stock: { type: Number, default: 0 }, active: { type: Boolean, default: true } }));
+const Order = mongoose.model('Order', new S({ number: String, user: { type: ID, ref: 'User' }, items: [{ product: ID, name: String, unit: String, price: Number, disc: Number, batch: String, expiry: Date, qty: Number }], subtotal: Number, discount: Number, vat: Number, total: Number, payType: { type: String, default: 'cash' }, dueDate: Date, deliveryMan: String, buyer: { name: String, phone: String, address: String, drugLicense: String, tradeLicense: String }, status: { type: String, default: 'placed' } }, { timestamps: true }));
 
 const Payment = mongoose.model('Payment', new S({ user: { type: ID, ref: 'User' }, amount: Number, method: String, note: String }, { timestamps: true }));
 async function ledgerAll(ids) {
@@ -65,20 +65,25 @@ app.post('/api/orders', auth('pharmacy'), h(async (q, s) => {
   const payType = q.body.payType === 'credit' ? 'credit' : 'cash';
   if (payType === 'credit') {
     const cu = q.user, L = (await ledgerAll([cu._id]))[String(cu._id)] || { balance: 0 };
-    const est = want.reduce((a, w) => { const p = ps.find(x => String(x._id) === String(w.id)); return a + (p ? p.price * Math.floor(+w.qty) : 0); }, 0);
+    const est = want.reduce((a, w) => { const p = ps.find(x => String(x._id) === String(w.id)); return a + (p ? p.price * (1 - (p.discount || 0) / 100) * Math.floor(+w.qty) : 0); }, 0);
     if (!(cu.creditLimit > 0) || L.balance + est * (1 + VAT / 100) > cu.creditLimit) return fail(s, 400, 'বাকির লিমিট শেষ। ক্যাশ অর্ডার করুন বা অ্যাডমিনের সাথে কথা বলুন');
   }
   const done = [], items = [];
   for (const w of want) {
-    const qty = Math.floor(+w.qty);
-    const p = await Product.findOneAndUpdate({ _id: w.id, active: true, stock: { $gte: qty } }, { $inc: { stock: -qty } });
+    const qty = Math.floor(+w.qty), pp = ps.find(x => String(x._id) === String(w.id)) || {}, free = pp.bonusBuy > 0 ? Math.floor(qty / pp.bonusBuy) * (pp.bonusFree || 0) : 0, need = qty + free;
+    const p = await Product.findOneAndUpdate({ _id: w.id, active: true, stock: { $gte: need } }, { $inc: { stock: -need } });
     if (!p) { for (const d of done) await Product.updateOne({ _id: d.product }, { $inc: { stock: d.qty } }); return fail(s, 400, 'কোনো পণ্যের স্টক শেষ বা কম আছে, পাতা রিফ্রেশ করুন'); }
-    done.push({ product: p._id, qty }); items.push({ product: p._id, name: p.name, unit: p.unit, price: p.price, qty });
+    done.push({ product: p._id, qty: need }); items.push({ product: p._id, name: p.name, unit: p.unit, price: p.price, disc: p.discount || 0, batch: p.batch, expiry: p.expiry, qty }); if (free) items.push({ product: p._id, name: p.name + ' (ফ্রি বোনাস)', unit: p.unit, price: 0, disc: 0, batch: p.batch, expiry: p.expiry, qty: free });
   }
-  const sub = items.reduce((a, i) => a + i.price * i.qty, 0), vat = Math.round(sub * VAT) / 100, u = q.user;
-  const o = await Order.create({ number: 'OG-' + Date.now().toString().slice(-8), user: u._id, items, subtotal: sub, vat, total: sub + vat, payType, dueDate: payType === 'credit' ? new Date(Date.now() + (u.creditDays || 30) * 864e5) : undefined, buyer: { name: u.pharmacyName, phone: u.phone, address: u.address, drugLicense: u.drugLicense, tradeLicense: u.tradeLicense } });
+  const gross = items.reduce((a, i) => a + i.price * i.qty, 0), disc = Math.round(items.reduce((a, i) => a + i.price * i.qty * (i.disc || 0) / 100, 0) * 100) / 100, sub = gross - disc, vat = Math.round(sub * VAT) / 100, u = q.user;
+  const o = await Order.create({ number: 'OG-' + Date.now().toString().slice(-8), user: u._id, items, subtotal: gross, discount: disc, vat, total: sub + vat, payType, dueDate: payType === 'credit' ? new Date(Date.now() + (u.creditDays || 30) * 864e5) : undefined, buyer: { name: u.pharmacyName, phone: u.phone, address: u.address, drugLicense: u.drugLicense, tradeLicense: u.tradeLicense } });
   s.json(o);
 }));
+
+const Notify = mongoose.model('Notify', new S({ user: ID, product: ID }));
+app.get('/api/notify', auth('pharmacy'), h(async (q, s) => s.json((await Notify.find({ user: q.user._id })).map(n => String(n.product)))));
+app.post('/api/notify', auth('pharmacy'), h(async (q, s) => { await Notify.updateOne({ user: q.user._id, product: q.body.productId }, { $set: { user: q.user._id, product: q.body.productId } }, { upsert: true }); s.json({ ok: true }); }));
+app.delete('/api/notify/:id', auth('pharmacy'), h(async (q, s) => { await Notify.deleteOne({ user: q.user._id, product: q.params.id }); s.json({ ok: true }); }));
 
 const adm = auth('admin');
 app.get('/api/admin/customers', adm, h(async (q, s) => {
@@ -101,10 +106,10 @@ app.patch('/api/admin/customers/:id', adm, h(async (q, s) => {
 app.post('/api/admin/products', adm, h(async (q, s) => {
   const { name, category, price, stock, mrp, generic, manufacturer, group, unit, moq } = q.body;
   if (!name || !(price >= 0) || !(stock >= 0)) return fail(s, 400, 'নাম, দাম ও স্টক দিন');
-  s.json(await Product.create({ name, category, price, stock, mrp, generic, manufacturer, group, unit: unit || 'strip', moq: moq || 1 }));
+  s.json(await Product.create({ name, category, price, stock, mrp, generic, manufacturer, group, unit: unit || 'strip', moq: moq || 1, batch: q.body.batch, expiry: q.body.expiry || undefined, coldChain: !!q.body.coldChain, discount: q.body.discount || 0, bonusBuy: q.body.bonusBuy, bonusFree: q.body.bonusFree }));
 }));
 app.patch('/api/admin/products/:id', adm, h(async (q, s) => {
-  const u = {}; for (const k of ['name', 'category', 'price', 'stock', 'mrp', 'generic', 'manufacturer', 'group', 'unit', 'moq']) if (q.body[k] !== undefined) u[k] = q.body[k];
+  const u = {}; for (const k of ['name', 'category', 'price', 'stock', 'mrp', 'generic', 'manufacturer', 'group', 'unit', 'moq', 'batch', 'expiry', 'coldChain', 'discount', 'bonusBuy', 'bonusFree']) if (q.body[k] !== undefined) u[k] = q.body[k];
   await Product.updateOne({ _id: q.params.id }, u); s.json({ ok: true });
 }));
 app.delete('/api/admin/products/:id', adm, h(async (q, s) => { await Product.updateOne({ _id: q.params.id }, { active: false }); s.json({ ok: true }); }));
