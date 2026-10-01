@@ -1,10 +1,11 @@
 const express = require('express'), mongoose = require('mongoose'), bcrypt = require('bcryptjs'), jwt = require('jsonwebtoken');
 const { MONGO_URI, JWT_SECRET, ADMIN_EMAIL, ADMIN_PASSWORD, PORT = 3000 } = process.env;
 if (!MONGO_URI || !JWT_SECRET || !ADMIN_EMAIL || !ADMIN_PASSWORD) { console.error('MONGO_URI, JWT_SECRET, ADMIN_EMAIL, ADMIN_PASSWORD সেট করুন'); process.exit(1); }
+const VAT = +(process.env.VAT_PERCENT || 0);
 const S = mongoose.Schema, ID = S.Types.ObjectId;
-const User = mongoose.model('User', new S({ pharmacyName: String, ownerName: String, email: { type: String, unique: true, lowercase: true, trim: true }, phone: String, address: String, password: String, role: { type: String, default: 'pharmacy' }, status: { type: String, default: 'pending' } }, { timestamps: true }));
-const Product = mongoose.model('Product', new S({ name: String, category: String, price: Number, stock: { type: Number, default: 0 }, active: { type: Boolean, default: true } }));
-const Order = mongoose.model('Order', new S({ number: String, user: { type: ID, ref: 'User' }, items: [{ product: ID, name: String, price: Number, qty: Number }], total: Number, status: { type: String, default: 'placed' } }, { timestamps: true }));
+const User = mongoose.model('User', new S({ pharmacyName: String, ownerName: String, email: { type: String, unique: true, lowercase: true, trim: true }, phone: String, address: String, drugLicense: String, tradeLicense: String, password: String, role: { type: String, default: 'pharmacy' }, status: { type: String, default: 'pending' } }, { timestamps: true }));
+const Product = mongoose.model('Product', new S({ name: String, category: String, price: Number, mrp: Number, generic: String, manufacturer: String, group: String, unit: { type: String, default: 'strip' }, moq: { type: Number, default: 1 }, stock: { type: Number, default: 0 }, active: { type: Boolean, default: true } }));
+const Order = mongoose.model('Order', new S({ number: String, user: { type: ID, ref: 'User' }, items: [{ product: ID, name: String, unit: String, price: Number, qty: Number }], subtotal: Number, vat: Number, total: Number, buyer: { name: String, phone: String, address: String, drugLicense: String, tradeLicense: String }, status: { type: String, default: 'placed' } }, { timestamps: true }));
 
 const app = express();
 app.use(express.json({ limit: '100kb' }));
@@ -22,10 +23,10 @@ const auth = role => async (q, s, n) => {
 };
 
 app.post('/api/register', h(async (q, s) => {
-  const { pharmacyName, ownerName, phone, address, email, password } = q.body;
-  if (!pharmacyName || !phone || !/^\S+@\S+\.\S+$/.test(email || '') || (password || '').length < 6) return fail(s, 400, 'ফার্মেসির নাম, ফোন, সঠিক ইমেইল ও ৬+ অক্ষরের পাসওয়ার্ড দিন');
+  const { pharmacyName, ownerName, phone, address, drugLicense, tradeLicense, email, password } = q.body;
+  if (!pharmacyName || !phone || !drugLicense || !tradeLicense || !/^\S+@\S+\.\S+$/.test(email || '') || (password || '').length < 6) return fail(s, 400, 'ফার্মেসির নাম, ফোন, ড্রাগ ও ট্রেড লাইসেন্স নম্বর, সঠিক ইমেইল ও ৬+ অক্ষরের পাসওয়ার্ড দিন');
   if (await User.findOne({ email: email.toLowerCase().trim() })) return fail(s, 400, 'এই ইমেইল দিয়ে আগেই একাউন্ট আছে');
-  await User.create({ pharmacyName, ownerName, phone, address, email, password: await bcrypt.hash(password, 10) });
+  await User.create({ pharmacyName, ownerName, phone, address, drugLicense, tradeLicense, email, password: await bcrypt.hash(password, 10) });
   s.json({ ok: true });
 }));
 const tries = {};
@@ -44,14 +45,17 @@ app.get('/api/orders/mine', auth(), h(async (q, s) => s.json(await Order.find({ 
 app.post('/api/orders', auth('pharmacy'), h(async (q, s) => {
   const want = (q.body.items || []).filter(i => i.qty > 0);
   if (!want.length) return fail(s, 400, 'কার্ট খালি');
+  const ps = await Product.find({ _id: { $in: want.map(w => w.id) } });
+  for (const w of want) { const p = ps.find(x => String(x._id) === String(w.id)); if (p && w.qty < (p.moq || 1)) return fail(s, 400, p.name + ': সর্বনিম্ন অর্ডার ' + p.moq); }
   const done = [], items = [];
   for (const w of want) {
     const qty = Math.floor(+w.qty);
     const p = await Product.findOneAndUpdate({ _id: w.id, active: true, stock: { $gte: qty } }, { $inc: { stock: -qty } });
     if (!p) { for (const d of done) await Product.updateOne({ _id: d.product }, { $inc: { stock: d.qty } }); return fail(s, 400, 'কোনো পণ্যের স্টক শেষ বা কম আছে, পাতা রিফ্রেশ করুন'); }
-    done.push({ product: p._id, qty }); items.push({ product: p._id, name: p.name, price: p.price, qty });
+    done.push({ product: p._id, qty }); items.push({ product: p._id, name: p.name, unit: p.unit, price: p.price, qty });
   }
-  const o = await Order.create({ number: 'OG-' + Date.now().toString().slice(-8), user: q.user._id, items, total: items.reduce((a, i) => a + i.price * i.qty, 0) });
+  const sub = items.reduce((a, i) => a + i.price * i.qty, 0), vat = Math.round(sub * VAT) / 100, u = q.user;
+  const o = await Order.create({ number: 'OG-' + Date.now().toString().slice(-8), user: u._id, items, subtotal: sub, vat, total: sub + vat, buyer: { name: u.pharmacyName, phone: u.phone, address: u.address, drugLicense: u.drugLicense, tradeLicense: u.tradeLicense } });
   s.json(o);
 }));
 
@@ -62,12 +66,12 @@ app.patch('/api/admin/customers/:id', adm, h(async (q, s) => {
   await User.updateOne({ _id: q.params.id, role: 'pharmacy' }, { status: q.body.status }); s.json({ ok: true });
 }));
 app.post('/api/admin/products', adm, h(async (q, s) => {
-  const { name, category, price, stock } = q.body;
+  const { name, category, price, stock, mrp, generic, manufacturer, group, unit, moq } = q.body;
   if (!name || !(price >= 0) || !(stock >= 0)) return fail(s, 400, 'নাম, দাম ও স্টক দিন');
-  s.json(await Product.create({ name, category, price, stock }));
+  s.json(await Product.create({ name, category, price, stock, mrp, generic, manufacturer, group, unit: unit || 'strip', moq: moq || 1 }));
 }));
 app.patch('/api/admin/products/:id', adm, h(async (q, s) => {
-  const u = {}; for (const k of ['name', 'category', 'price', 'stock']) if (q.body[k] !== undefined) u[k] = q.body[k];
+  const u = {}; for (const k of ['name', 'category', 'price', 'stock', 'mrp', 'generic', 'manufacturer', 'group', 'unit', 'moq']) if (q.body[k] !== undefined) u[k] = q.body[k];
   await Product.updateOne({ _id: q.params.id }, u); s.json({ ok: true });
 }));
 app.delete('/api/admin/products/:id', adm, h(async (q, s) => { await Product.updateOne({ _id: q.params.id }, { active: false }); s.json({ ok: true }); }));
