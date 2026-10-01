@@ -1,0 +1,51 @@
+<!DOCTYPE html><html lang="bn"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ঔষধ ঘর</title>
+<style>
+:root{--g:#0F9D58}*{box-sizing:border-box}
+body{margin:0;font-family:'Hind Siliguri','Noto Sans Bengali',sans-serif;background:#EEF1F0;color:#222}
+header{background:var(--g);color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:5}
+main{max-width:720px;margin:0 auto;padding:12px}
+.card{background:#fff;border-radius:12px;padding:12px;margin-bottom:10px;box-shadow:0 1px 4px #0001}
+input,select{width:100%;padding:10px;margin:4px 0 8px;border:1px solid #ccc;border-radius:8px;font:inherit}
+button{background:var(--g);color:#fff;border:0;padding:10px 14px;border-radius:8px;font:inherit;cursor:pointer}
+button:disabled{opacity:.4}button.o{background:#fff;color:var(--g);border:1px solid var(--g)}button.r{background:#d33}
+.row{display:flex;gap:8px;align-items:center;justify-content:space-between}.tabs{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+.m{color:#777;font-size:13px}.q{width:70px;margin:0}.er{color:#d33;font-size:14px}
+</style></head><body>
+<header><b>ঔষধ ঘর</b><span id="who"></span></header><main id="app"></main>
+<script>
+let T=localStorage.t,U=JSON.parse(localStorage.u||'null'),tab='shop',mode='login',msg='',P=[],O=[],C=[],AO=[],cart={};
+const $=document.getElementById('app'),tk=n=>'৳'+n,v=i=>document.getElementById(i)?.value.trim();
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');
+const st={placed:'নতুন',processing:'প্রসেসিং',delivered:'ডেলিভারড',cancelled:'বাতিল'},cs={pending:'অপেক্ষমাণ',active:'সক্রিয়',blocked:'বন্ধ'};
+async function api(p,m='GET',b){const r=await fetch('/api'+p,{method:m,headers:{'Content-Type':'application/json',Authorization:'Bearer '+T},body:b?JSON.stringify(b):undefined});
+ const d=await r.json().catch(()=>({}));if(r.status===401&&T){out();throw new Error(d.error)}if(!r.ok)throw new Error(d.error||'সমস্যা হয়েছে');return d}
+function out(){T=U=null;localStorage.clear();draw()}
+async function load(){if(U.role==='admin')[C,P,AO]=await Promise.all([api('/admin/customers'),api('/products'),api('/admin/orders')]);else[P,O]=await Promise.all([api('/products'),api('/orders/mine')])}
+async function act(f){try{await f();await load();draw()}catch(e){alert(e.message)}}
+function draw(){document.getElementById('who').innerHTML=U?esc(U.pharmacyName)+' <button class="o" onclick="out()">লগআউট</button>':'';
+ !U?authView():U.role==='admin'?adminView():shopView()}
+function authView(){const r=mode=='reg';$.innerHTML=`<div class=card><div class=tabs><button class="${r?'o':''}" onclick="mode='login';msg='';draw()">লগইন</button><button class="${r?'':'o'}" onclick="mode='reg';msg='';draw()">নতুন একাউন্ট</button></div>
+${r?'<input id=pn placeholder="ফার্মেসির নাম"><input id=on placeholder="মালিকের নাম"><input id=ph placeholder="ফোন নম্বর"><input id=ad placeholder="ঠিকানা">':''}
+<input id=em type=email placeholder="ইমেইল"><input id=pw type=password placeholder="পাসওয়ার্ড (কমপক্ষে ৬ অক্ষর)">
+<button onclick="go()">${r?'একাউন্ট খুলুন':'লগইন'}</button><p class=er id=msg>${esc(msg)}</p>${r?'<p class=m>একাউন্ট খোলার পর অ্যাডমিন অনুমোদন দিলে তবে লগইন করা যাবে।</p>':''}</div>`}
+async function go(){try{if(mode=='reg'){await api('/register','POST',{pharmacyName:v('pn'),ownerName:v('on'),phone:v('ph'),address:v('ad'),email:v('em'),password:v('pw')});mode='login';msg='✓ একাউন্ট তৈরি হয়েছে। অ্যাডমিন অনুমোদন দিলে লগইন করতে পারবেন।';return draw()}
+ const d=await api('/login','POST',{email:v('em'),password:v('pw')});T=d.token;U=d.user;localStorage.t=T;localStorage.u=JSON.stringify(U);msg='';tab=U.role=='admin'?'o':'shop';await load();draw()}
+ catch(e){msg=e.message;document.getElementById('msg').textContent=msg}}
+function shopView(){const tot=P.reduce((s,p)=>s+(cart[p._id]||0)*p.price,0);
+ $.innerHTML=`<div class=tabs><button class="${tab=='shop'?'':'o'}" onclick="tab='shop';draw()">অর্ডার করুন</button><button class="${tab=='orders'?'':'o'}" onclick="tab='orders';draw()">আমার অর্ডার</button></div>`+(tab=='shop'?
+ (P.map(p=>`<div class=card><div class=row><div><b>${esc(p.name)}</b><div class=m>${esc(p.category)} | স্টক: ${p.stock}</div><b>${tk(p.price)}</b></div>
+ <input class=q type=number min=0 max=${p.stock} value="${cart[p._id]||0}" onchange="cart['${p._id}']=Math.max(0,Math.min(+this.value||0,${p.stock}));draw()"></div></div>`).join('')||'<p class=m>এখনো কোনো পণ্য নেই।</p>')
+ +`<div class=card><div class=row><b>মোট: ${tk(tot)}</b><button ${tot?'':'disabled'} onclick="order()">অর্ডার করুন (ক্যাশ অন ডেলিভারি)</button></div><p class=er>${esc(msg)}</p></div>`
+ :(O.map(o=>`<div class=card><div class=row><b>${o.number}</b><span>${st[o.status]}</span></div><div class=m>${new Date(o.createdAt).toLocaleString('bn-BD')}</div>${o.items.map(i=>`<div>${esc(i.name)} × ${i.qty}</div>`).join('')}<b>মোট: ${tk(o.total)}</b></div>`).join('')||'<p class=m>কোনো অর্ডার নেই।</p>'))}
+async function order(){try{await api('/orders','POST',{items:Object.entries(cart).map(([id,qty])=>({id,qty}))});cart={};msg='';tab='orders';await load();draw()}catch(e){msg=e.message;draw()}}
+function adminView(){const tb=(k,l)=>`<button class="${tab==k?'':'o'}" onclick="tab='${k}';draw()">${l}</button>`;
+ $.innerHTML=`<div class=tabs>${tb('o','অর্ডার')}${tb('c','কাস্টমার')}${tb('p','পণ্য')}</div>`+(tab=='o'?
+ (AO.map(o=>`<div class=card><div class=row><b>${o.number}</b><select style="width:auto" onchange="act(()=>api('/admin/orders/${o._id}','PATCH',{status:this.value}))">${Object.keys(st).map(k=>`<option value=${k} ${o.status==k?'selected':''}>${st[k]}</option>`).join('')}</select></div>
+ <div>${esc(o.user?.pharmacyName)} | ${esc(o.user?.phone)}</div><div class=m>${esc(o.user?.address)} | ${new Date(o.createdAt).toLocaleString('bn-BD')}</div>${o.items.map(i=>`<div>${esc(i.name)} × ${i.qty}</div>`).join('')}<b>মোট: ${tk(o.total)}</b></div>`).join('')||'<p class=m>কোনো অর্ডার নেই।</p>')
+ :tab=='c'?C.map(c=>`<div class=card><div class=row><b>${esc(c.pharmacyName)}</b><span>${cs[c.status]}</span></div><div class=m>${esc(c.ownerName)} | ${esc(c.phone)} | ${esc(c.email)}<br>${esc(c.address)}</div>
+ <div class=tabs>${c.status!='active'?`<button onclick="act(()=>api('/admin/customers/${c._id}','PATCH',{status:'active'}))">অনুমোদন দিন</button>`:''}${c.status!='blocked'?`<button class=r onclick="act(()=>api('/admin/customers/${c._id}','PATCH',{status:'blocked'}))">বন্ধ করুন</button>`:''}</div></div>`).join('')||'<p class=m>কোনো কাস্টমার নেই।</p>'
+ :`<div class=card><b>নতুন পণ্য</b><input id=n placeholder="পণ্যের নাম"><input id=c placeholder="ধরন (ট্যাবলেট, সিরাপ...)"><input id=pr type=number placeholder="পাইকারি দাম"><input id=s type=number placeholder="স্টক"><button onclick="addP()">পণ্য যোগ করুন</button></div>`
+ +P.map(p=>`<div class=card><b>${esc(p.name)}</b> <span class=m>${esc(p.category)}</span><div class=row>দাম <input type=number value=${p.price} onchange="act(()=>api('/admin/products/${p._id}','PATCH',{price:+this.value}))"> স্টক <input type=number value=${p.stock} onchange="act(()=>api('/admin/products/${p._id}','PATCH',{stock:+this.value}))"><button class=r onclick="confirm('মুছবেন?')&&act(()=>api('/admin/products/${p._id}','DELETE'))">মুছুন</button></div></div>`).join(''))}
+function addP(){act(()=>api('/admin/products','POST',{name:v('n'),category:v('c'),price:+v('pr'),stock:+v('s')}))}
+if(T&&U){tab=U.role=='admin'?'o':'shop';load().then(draw).catch(out)}else draw();
+</script></body></html>
