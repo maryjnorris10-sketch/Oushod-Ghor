@@ -1,0 +1,25 @@
+{
+  "name": "oushod-ghor-server",
+  "version": "1.0.0",
+  "description": "\u0993\u09b7\u09a7 \u0998\u09b0 - B2B Pharmacy Wholesale Ordering Platform API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "seed": "node seed.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cloudinary": "^2.4.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.5.0",
+    "multer": "^1.4.5-lts.1",
+    "streamifier": "^0.1.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
